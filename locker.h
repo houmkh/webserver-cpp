@@ -11,7 +11,7 @@ private:
     pthread_mutex_t m_mutex;
 
 public:
-    locker(pthread_mutexattr_t *mutex_attr);
+    locker();
     ~locker();
     // 上锁
     bool lock();
@@ -61,8 +61,7 @@ public:
     bool timewait(pthread_mutex_t *mutex, timespec tmspc);
     bool signal();
     bool broadcast();
-}
-
+};
 cond::cond()
 {
     if (pthread_cond_init(&m_cond, NULL))
@@ -100,8 +99,7 @@ public:
     bool wait();
     // 增加信号量
     bool post();
-
-}
+};
 
 sem::sem()
 {
