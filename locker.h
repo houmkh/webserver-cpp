@@ -59,8 +59,8 @@ public:
     ~cond();
     bool wait(pthread_mutex_t *mutex);
     bool timewait(pthread_mutex_t *mutex, timespec tmspc);
-    bool signal();
-    bool broadcast();
+    // bool signal();
+    // bool broadcast();
 };
 cond::cond()
 {
@@ -123,11 +123,11 @@ sem::~sem()
 // 等待信号量
 bool sem::wait()
 {
-    sem_wait(&m_sem);
+    return sem_wait(&m_sem) == 0;
 }
 // 增加信号量
 bool sem::post()
 {
-    sem_post(&m_sem);
+    return sem_post(&m_sem) == 0;
 }
 #endif
