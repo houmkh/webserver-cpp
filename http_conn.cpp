@@ -84,7 +84,7 @@ void http_conn::init(int sockfd, struct sockaddr_in sockaddr)
  */
 void http_conn::init()
 {
-    printf("%s : line = %d\n", __FUNCTION__,__LINE__);
+    // printf("%s : line = %d\n", __FUNCTION__, __LINE__);
     m_check_state = CHECK_STATE::CHECK_STATE_REQUESTLINE;
     m_checked_index = 0;
     m_start_line = 0;
@@ -93,9 +93,13 @@ void http_conn::init()
     bzero(m_write_buf, WRITE_BUFFER_SIZE);
     m_url = "";
     m_version = "";
+    m_response = "";
+    m_content = "";
+    m_content_length = 0;
     m_method = METHOD::GET;
     m_linger = false;
-    printf("%s : line = %d\n", __FUNCTION__, __LINE__);
+    m_iv_count = 0;
+    // printf("%s : line = %d\n", __FUNCTION__, __LINE__);
 }
 
 void http_conn::close_conn()
@@ -108,48 +112,73 @@ void http_conn::close_conn()
 // 读数据
 bool http_conn::read()
 {
-    printf("%s : line = %d\n", __FUNCTION__, __LINE__);
+    // printf("%s : line = %d\n", __FUNCTION__, __LINE__);
     if (m_read_index >= READ_BUFFER_SIZE)
     {
         return false;
     }
-    // while (1)
-    // {
-    //     int len;
-    //     try
-    //     {
-    //         len = recv(m_sockfd, m_read_buf + m_read_index, READ_BUFFER_SIZE - m_read_index, 0);
-    //     }
-    //     catch (const std::exception &e)
-    //     {
-    //         std::cerr << e.what() << '\n';
-    //     }
+    while (1)
+    {
+        int len;
 
-    //     if (errno == EAGAIN || errno == EWOULDBLOCK)
-    //     {
-    //         // 读完数据了
+        len = recv(m_sockfd, m_read_buf + m_read_index, READ_BUFFER_SIZE - m_read_index, 0);
+        if (errno == EAGAIN || errno == EWOULDBLOCK)
+        {
+            // 读完数据了
+            break;
+        }
+        else if (len == 0)
+        {
+            // 对方关闭连接
+            return false;
+        }
+        m_read_index += len;
+    }
+    // printf("%s : line = %d\n", __FUNCTION__, __LINE__);
 
-    //         break;
-    //     }
-    //     else if (len == 0)
-    //     {
-    //         // 对方关闭连接
-    //         return false;
-    //     }
-    //     m_read_index += len;
-    // }
-    recv(m_sockfd, m_read_buf, READ_BUFFER_SIZE, 0);
-    printf("%s : line = %d\n", __FUNCTION__, __LINE__);
-
-    printf("recv data:\n%s\n", m_read_buf);
+    // printf("recv data:\n%s\n", m_read_buf);
 
     return true;
 }
 // 写数据
 bool http_conn::write()
 {
-    printf("write\n");
-    return true;
+    int temp = 0;
+    int send_len = 0, len = m_response.length();
+    if (len == 0)
+    {
+        // 没有要写回的数据
+        epoll_modify(m_epoll_fd, m_sockfd, EPOLLIN);
+        init();
+        return true;
+    }
+
+    while (true)
+    {
+        temp = writev(m_sockfd, m_iv, m_iv_count);
+        if (temp == -1)
+        {
+            if (errno == EAGAIN)
+            {
+                epoll_modify(m_epoll_fd, m_sockfd, EPOLLOUT);
+                return true;
+            }
+            unmap();
+            return false;
+        }
+        send_len += temp;
+        if (send_len >= len)
+        {
+            unmap();
+            epoll_modify(m_epoll_fd, m_sockfd, EPOLLIN);
+            if (m_linger)
+            {
+                init();
+                return true;
+            }
+            return false;
+        }
+    }
 }
 
 /**
@@ -160,8 +189,17 @@ void http_conn::process()
 {
     printf("解析http数据包\n");
     // 解析HTTP请求
-
-    // 生成响应
+    HTTP_CODE ret = process_read();
+    if (ret == HTTP_CODE::NO_REQUEST)
+    {
+        epoll_modify(m_epoll_fd, m_sockfd, EPOLLIN);
+        return;
+    }
+    if (!process_write(ret))
+    {
+        close_conn();
+    }
+    epoll_modify(m_epoll_fd, m_sockfd, EPOLLOUT);
 }
 
 /**
@@ -219,6 +257,29 @@ HTTP_CODE http_conn::process_read()
     }
     return INTERNAL_ERROR;
 }
+
+bool http_conn::process_write(HTTP_CODE http_code)
+{
+
+    std::string code = std::to_string(http_code);
+    std::map<std::string, std::string>::const_iterator it = HTTP_STATUS_CODE.find(code);
+    // 生成响应
+    if (it != HTTP_STATUS_CODE.end())
+    {
+        m_response += m_version + " " + code + it->second;
+        if (http_code == HTTP_CODE::FILE_REQUEST)
+        {
+            m_iv[0].iov_base = m_response.data();
+            m_iv[0].iov_len = m_response.length() + 1;
+            m_iv[1].iov_base = m_file_addr;
+            m_iv[1].iov_len = m_file_stat.st_size;
+            m_iv_count = 2;
+        }
+        return true;
+    }
+    return false;
+}
+
 /**
  * @brief  解析HTTP请求首行(从状态机)，获取请求方法、目标URL、HTTP版本
  *
@@ -341,27 +402,35 @@ LINE_STATE http_conn::parse_line()
 
 HTTP_CODE http_conn::do_request()
 {
-    printf("%d %s %s\n", m_method, m_url.c_str(), m_version.c_str());
-    for (std::map<std::string, std::string>::iterator i = m_headers.begin(); i != m_headers.end(); i++)
+    // printf("%d %s %s\n", m_method, m_url.c_str(), m_version.c_str());
+    // for (std::map<std::string, std::string>::iterator i = m_headers.begin(); i != m_headers.end(); i++)
+    // {
+    //     std::cout << i->first << ":" << i->second << std::endl;
+    // }
+    // printf("%s\n", m_content.c_str());
+    std::string path = ROOT_PATH + m_url;
+    if (stat(path.c_str(), &m_file_stat) < 0)
     {
-        std::cout << i->first << ":" << i->second << std::endl;
+        return HTTP_CODE::NO_RESOURCE;
     }
-    printf("%s\n", m_content.c_str());
-    // std::string path = ROOT_PATH + m_url;
-    // if (stat(path.c_str(), &m_file_stat) < 0)
-    // {
-    return HTTP_CODE::NO_RESOURCE;
-    // }
-    // if (!(m_file_stat.st_mode & S_IROTH))
-    // {
-    //     return HTTP_CODE::FORBIDDEN_REQUEST;
-    // }
-    // if (S_ISDIR(m_file_stat.st_mode))
-    // {
-    //     return HTTP_CODE::BAD_REQUEST;
-    // }
-    // int fd = open(path.c_str(), O_RDONLY);
-    // m_file_addr = (char *)mmap(NULL, m_file_stat.st_size, PROT_READ, MAP_PRIVATE, fd, 0);
-    // close(fd);
-    // return HTTP_CODE::FILE_REQUEST;
+    if (!(m_file_stat.st_mode & S_IROTH))
+    {
+        return HTTP_CODE::FORBIDDEN_REQUEST;
+    }
+    if (S_ISDIR(m_file_stat.st_mode))
+    {
+        return HTTP_CODE::BAD_REQUEST;
+    }
+    int fd = open(path.c_str(), O_RDONLY);
+    m_file_addr = (char *)mmap(NULL, m_file_stat.st_size, PROT_READ, MAP_PRIVATE, fd, 0);
+    close(fd);
+    return HTTP_CODE::FILE_REQUEST;
+}
+
+void http_conn::unmap()
+{
+    if (m_file_addr != NULL)
+    {
+        munmap(m_file_addr, m_file_stat.st_size);
+    }
 }

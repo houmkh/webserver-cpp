@@ -129,7 +129,6 @@ int main(int argc, const char *argv[])
             }
             else if (events[i].events & EPOLLIN)
             {
-                printf("%s : line = %d\n", __FUNCTION__, __LINE__);
 
                 // 检测到读事件
                 if (users[fd].read())
