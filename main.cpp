@@ -1,16 +1,19 @@
 #include "http_conn.h"
 #include "threadpool.h"
+#include "conn_timer.h"
 #include <arpa/inet.h>
 #include <stdlib.h>
 #include <stdio.h>
 #include <unistd.h>
 #include <sys/epoll.h>
 #include <signal.h>
+extern conn_timer_list TIMER_LIST;
 #define MAX_USER_NUM 65534
 #define MAX_EVENT_NUM 10000
 epoll_event events[MAX_USER_NUM];
 http_conn *users = new http_conn[MAX_USER_NUM];
 
+static int pipe[2];
 int http_conn::m_user_num = 0;
 int http_conn::m_epoll_fd = -1;
 /**
@@ -47,6 +50,7 @@ int main(int argc, const char *argv[])
     }
 
     add_sigaction(SIGPIPE, SIG_IGN);
+
     // 申请用于监听的文件描述符
     int listen_fd = socket(AF_INET, SOCK_STREAM, 0);
     printf("listen_fd = %d\n", listen_fd);
@@ -90,6 +94,17 @@ int main(int argc, const char *argv[])
 
     // 监听描述符不应该oneshot
     epoll_add(epoll_fd, listen_fd, false);
+    // 创建管道
+    res = socketpair(AF_INET, SOCK_STREAM, 0, pipe);
+    if (res == -1)
+    {
+        perror("socketpair");
+        close(listen_fd);
+        close(epoll_fd);
+        delete[] events;
+        return -1;
+    }
+    epoll_add(epoll_fd, pipe[0], false);
     while (1)
     {
         int num = epoll_wait(epoll_fd, events, MAX_EVENT_NUM, -1);
