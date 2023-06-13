@@ -7,15 +7,29 @@
 #include <unistd.h>
 #include <sys/epoll.h>
 #include <signal.h>
+#include <time.h>
+
 extern conn_timer_list TIMER_LIST;
+extern int pipefd[2];
 #define MAX_USER_NUM 65534
 #define MAX_EVENT_NUM 10000
 epoll_event events[MAX_USER_NUM];
 http_conn *users = new http_conn[MAX_USER_NUM];
 
-static int pipe[2];
 int http_conn::m_user_num = 0;
 int http_conn::m_epoll_fd = -1;
+
+static bool timeout = false;
+bool server_stop = false;
+void timer_handler()
+{
+    TIMER_LIST.address_expired();
+    alarm(TIMER_SLOT);
+}
+void sig_handler(int num)
+{
+    send(pipefd[1], (char *)&num, 1, 0);
+}
 /**
  * @brief 添加信号
  *
@@ -25,6 +39,7 @@ int http_conn::m_epoll_fd = -1;
 void add_sigaction(int signum, void(handler)(int))
 {
     struct sigaction sa;
+    memset(&sa, '\0', sizeof(sa));
     sa.sa_handler = handler;
     sigfillset(&sa.sa_mask);
     sigaction(signum, &sa, NULL);
@@ -95,7 +110,7 @@ int main(int argc, const char *argv[])
     // 监听描述符不应该oneshot
     epoll_add(epoll_fd, listen_fd, false);
     // 创建管道
-    res = socketpair(AF_INET, SOCK_STREAM, 0, pipe);
+    res = socketpair(AF_INET, SOCK_STREAM, 0, pipefd);
     if (res == -1)
     {
         perror("socketpair");
@@ -104,8 +119,11 @@ int main(int argc, const char *argv[])
         delete[] events;
         return -1;
     }
-    epoll_add(epoll_fd, pipe[0], false);
-    while (1)
+    epoll_add(epoll_fd, pipefd[0], false);
+    add_sigaction(SIGALRM, sig_handler);
+    alarm(TIMER_SLOT);
+
+    while (!server_stop)
     {
         int num = epoll_wait(epoll_fd, events, MAX_EVENT_NUM, -1);
         if (num == -1 && errno != EINTR)
@@ -132,10 +150,28 @@ int main(int argc, const char *argv[])
                     close(sockfd);
                     continue;
                 }
-                printf("%s : line = %d\n", __FUNCTION__, __LINE__);
 
                 // 记录新的连接信息
                 users[sockfd].init(sockfd, addr);
+                conn_timer *timer = new conn_timer(&users[sockfd]);
+                TIMER_LIST.append(timer);
+                users[sockfd].set_timer(timer);
+            }
+            else if (fd == pipefd[0])
+            {
+                char buf[1024];
+                int len = recv(pipefd[0], buf, 1024, 0);
+                for (int i = 0; i < len; i++)
+                {
+                    if (buf[i] == SIGALRM)
+                    {
+                        timeout = true;
+                    }
+                    else if (buf[i] == SIGTERM)
+                    {
+                        server_stop = true;
+                    }
+                }
             }
             else if (events[i].events & (EPOLLHUP | EPOLLRDHUP | EPOLLERR))
             {
@@ -150,6 +186,9 @@ int main(int argc, const char *argv[])
                 {
                     // 一次性读完数据
                     pool->append(users + fd);
+                    conn_timer *timer = users[fd].get_timer();
+                    // 默认更新15s
+                    TIMER_LIST.adjust_timer(timer);
                 }
                 else
                 {
@@ -160,12 +199,23 @@ int main(int argc, const char *argv[])
             else if (events[i].events & EPOLLOUT)
             {
                 // 检测到写事件
-                if (!users[fd].write())
+                if (users[fd].write())
+                {
+                    conn_timer *timer = users[fd].get_timer();
+                    // 默认更新15s
+                    TIMER_LIST.adjust_timer(timer);
+                }
+                else
                 {
                     // 写失败
                     users[fd].close_conn();
                 }
             }
+        }
+        if (timeout)
+        {
+            timer_handler();
+            timeout = false;
         }
     }
 

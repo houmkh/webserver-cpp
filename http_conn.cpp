@@ -75,6 +75,7 @@ void http_conn::init(int sockfd, struct sockaddr_in sockaddr)
     setsockopt(sockfd, SOL_SOCKET, SO_REUSEPORT, &opt, sizeof(opt));
     // 将新的连接放到epoll里面
     epoll_add(m_epoll_fd, sockfd, true);
+
     init();
 }
 
@@ -99,15 +100,18 @@ void http_conn::init()
     m_method = METHOD::GET;
     m_linger = false;
     m_iv_count = 0;
+    m_timer = NULL;
     // printf("%s : line = %d\n", __FUNCTION__, __LINE__);
 }
 
 void http_conn::close_conn()
 {
+    int fd = this->m_sockfd;
     epoll_remove(http_conn::m_epoll_fd, this->m_sockfd);
-    // close(this->m_sockfd);
-    m_sockfd = -1;
+    close(this->m_sockfd);
+    // m_sockfd = -1;
     http_conn::m_user_num--;
+    printf("%s close fd = %d\n", __FUNCTION__, fd);
 }
 // 读数据
 bool http_conn::read()
@@ -433,4 +437,12 @@ void http_conn::unmap()
     {
         munmap(m_file_addr, m_file_stat.st_size);
     }
+}
+void http_conn::set_timer(conn_timer *timer)
+{
+    m_timer = timer;
+}
+conn_timer *http_conn::get_timer()
+{
+    return m_timer;
 }

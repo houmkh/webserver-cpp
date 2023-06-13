@@ -21,7 +21,7 @@
 #include <sys/uio.h>
 #define READ_BUFFER_SIZE 2048
 #define WRITE_BUFFER_SIZE 1024
-
+class conn_timer;
 /// @brief 项目根目录
 const std::string ROOT_PATH = "/home/mkh/桌面/webserver-front/src";
 /// @brief HTTP 状态码
@@ -94,7 +94,6 @@ enum METHOD
     OPTIONS,
     PATCH
 };
-
 class http_conn
 {
 public:
@@ -117,6 +116,8 @@ public:
 
     HTTP_CODE do_request();
     void unmap();
+    void set_timer(conn_timer *timer);
+    conn_timer *get_timer();
 
 private:
     int m_sockfd;
@@ -144,6 +145,7 @@ private:
     void init(); // 初始化其他信息
 
     char *get_line() { return m_read_buf + m_start_line; };
+    conn_timer *m_timer;
 };
 
 #endif // !HTTPCONNECTION_H
@@ -151,3 +153,4 @@ private:
 void epoll_add(int epoll_fd, int sock_fd, bool one_shot);
 void epoll_remove(int epoll_fd, int sock_fd);
 void epoll_modify(int epoll_fd, int sock_fd, int ev);
+void close_connection();
